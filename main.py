@@ -3,46 +3,35 @@ import numpy as np
 import threading
 import time
 
-# 4대의 카메라 스트림 URL (1번은 실제 연결, 나머지는 연결이 안 된 상태)
+# 4대의 카메라 스트림 URL (각 카메라가 동일 조건으로 동작)
 camera_urls = [
-    "http://10.0.0.81/stream",  # 1번: 실제 연결 (사람 검출 대상)
-    "http://10.0.0.82/stream",  # 2번: 연결 없음 (재시도)
-    "http://10.0.0.83/stream",  # 3번: 연결 없음 (재시도)
-    "http://10.0.0.84/stream"   # 4번: 연결 없음 (재시도)
+    "http://10.0.0.81/stream",  # 1번 카메라
+    "http://10.0.0.82/stream",  # 2번 카메라
+    "http://10.0.0.83/stream",  # 3번 카메라
+    "http://10.0.0.84/stream"   # 4번 카메라
 ]
 
 # 모니터 해상도 (16:9 예시: 1920×1080)
 monitor_width, monitor_height = 1920, 1080
-quad_width, quad_height = monitor_width // 2, monitor_height // 2  # 960x540
+quad_width, quad_height = monitor_width // 2, monitor_height // 2  # 각 분할: 960×540
 
-#########################
-# 1번 카메라 (검출 대상)
-#########################
-cam1 = {
-    "url": camera_urls[0],
-    "cap": cv2.VideoCapture(camera_urls[0], cv2.CAP_FFMPEG),
-    "frame": np.zeros((quad_height, quad_width, 3), dtype=np.uint8),
-    "lock": threading.Lock(),
-    "last_try": time.time(),
-    "detection_active": False,
-    "boxes": []  # 검출된 사람 사각형 리스트: (startX, startY, endX, endY)
-}
-
-#########################
-# 2~4번 카메라 (단순 캡처)
-#########################
-other_cams = []
-for url in camera_urls[1:]:
+# 각 카메라 객체 생성 (캡처, 최신 프레임, 검출 결과 등 포함)
+cameras = []
+for url in camera_urls:
     cam = {
         "url": url,
         "cap": cv2.VideoCapture(url, cv2.CAP_FFMPEG),
         "frame": np.zeros((quad_height, quad_width, 3), dtype=np.uint8),
         "lock": threading.Lock(),
-        "last_try": time.time()
+        "last_try": time.time(),
+        "detection_active": False,
+        "boxes": []  # 검출된 사람 사각형 리스트: [(startX, startY, endX, endY), ...]
     }
-    other_cams.append(cam)
+    cameras.append(cam)
 
-# 캡처 스레드 (카메라 연결 및 최신 프레임 업데이트)
+#########################
+# 캡처 스레드 (모든 카메라 공통)
+#########################
 def capture_thread(cam):
     while True:
         cap = cam["cap"]
@@ -75,17 +64,18 @@ def capture_thread(cam):
             time.sleep(0.1)
         time.sleep(0.01)
 
-# 검출 스레드: 1번 카메라에서 최신 프레임을 이용해 MobileNet-SSD로 사람 검출
+#########################
+# 검출 스레드 (모든 카메라에 대해 동일하게 적용)
+#########################
 def detection_thread(cam):
     # 모델 파일들은 코드와 같은 디렉토리에 있어야 함
     prototxt = "MobileNetSSD_deploy.prototxt"
     model = "MobileNetSSD_deploy.caffemodel"
     net = cv2.dnn.readNetFromCaffe(prototxt, model)
-    # 최적화 (필요시 백엔드/타겟 설정)
     net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
     net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
     
-    # MobileNet-SSD 모델의 클래스 리스트
+    # MobileNet-SSD 클래스 리스트
     CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
                "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
                "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
@@ -104,7 +94,7 @@ def detection_thread(cam):
             time.sleep(0.01)
             continue
 
-        # 검출 입력으로 300x300 리사이즈
+        # 검출용 입력: 300x300으로 리사이즈
         resized = cv2.resize(frame, (detection_width, detection_height))
         blob = cv2.dnn.blobFromImage(resized, 0.007843, (detection_width, detection_height), 127.5)
         net.setInput(blob)
@@ -120,7 +110,7 @@ def detection_thread(cam):
                 if CLASSES[idx] == "person":
                     detection_active = True
                     box = detections[0, 0, i, 3:7]
-                    # 검출 결과는 0~1의 비율값 → 300x300 기준 좌표로 변환 후, 원본 분할 크기로 확장
+                    # 결과는 0~1의 비율값이므로, 300x300 기준 좌표로 변환 후 원본 크기로 확장
                     (startX, startY, endX, endY) = (box * np.array([detection_width, detection_height, detection_width, detection_height])).astype("int")
                     startX = int(startX * scaleX)
                     startY = int(startY * scaleY)
@@ -130,46 +120,43 @@ def detection_thread(cam):
         with cam["lock"]:
             cam["detection_active"] = detection_active
             cam["boxes"] = boxes
-        time.sleep(0.02)  # 약 20ms 주기로 검출 (50fps 목표)
+        time.sleep(0.02)  # 약 20ms 주기 (필요시 조정)
 
-# 스레드 시작
-t_cam1 = threading.Thread(target=capture_thread, args=(cam1,), daemon=True)
-t_cam1.start()
+#########################
+# 스레드 시작 (각 카메라마다 캡처+검출)
+#########################
+threads = []
+for cam in cameras:
+    t_cap = threading.Thread(target=capture_thread, args=(cam,), daemon=True)
+    t_cap.start()
+    threads.append(t_cap)
+    
+    t_det = threading.Thread(target=detection_thread, args=(cam,), daemon=True)
+    t_det.start()
+    threads.append(t_det)
 
-t_det1 = threading.Thread(target=detection_thread, args=(cam1,), daemon=True)
-t_det1.start()
-
-threads = [t_cam1, t_det1]
-for cam in other_cams:
-    t = threading.Thread(target=capture_thread, args=(cam,), daemon=True)
-    t.start()
-    threads.append(t)
-
-# 메인 루프: 전체 화면 구성 및 출력
+#########################
+# 메인 루프: 2x2 분할 화면 구성 및 출력
+#########################
 window_name = "4 Camera Streams"
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 is_fullscreen = True
 
 while True:
-    # 1번 카메라: 최신 프레임과 검출 결과
-    with cam1["lock"]:
-        frame1 = cam1["frame"].copy()
-        detection_active = cam1["detection_active"]
-        boxes = cam1["boxes"].copy()
-    # 검출된 영역 사각형 표시
-    for (startX, startY, endX, endY) in boxes:
-        cv2.rectangle(frame1, (startX, startY), (endX, endY), (0, 255, 0), 2)
-    
-    # 나머지 카메라 프레임 가져오기
-    frames_other = []
-    for cam in other_cams:
+    frames = []
+    # 각 카메라의 최신 프레임과 검출 결과 반영
+    for cam in cameras:
         with cam["lock"]:
-            frames_other.append(cam["frame"].copy())
+            frame = cam["frame"].copy()
+            # 검출된 영역 표시
+            for (startX, startY, endX, endY) in cam["boxes"]:
+                cv2.rectangle(frame, (startX, startY), (endX, endY), (0, 255, 0), 2)
+            frames.append(frame)
     
-    # 2행 2열 분할: 1번은 좌상단, 나머지는 순서대로 배치
-    top_row = cv2.hconcat([frame1, frames_other[0]])
-    bottom_row = cv2.hconcat([frames_other[1], frames_other[2]])
+    # 2행 2열 분할 구성
+    top_row = cv2.hconcat([frames[0], frames[1]])
+    bottom_row = cv2.hconcat([frames[2], frames[3]])
     combined = cv2.vconcat([top_row, bottom_row])
     
     # 구분선 추가 (흰색, 두께 2)
@@ -178,11 +165,17 @@ while True:
     cv2.line(combined_with_lines, (w // 2, 0), (w // 2, h), (255, 255, 255), thickness=2)
     cv2.line(combined_with_lines, (0, h // 2), (w, h // 2), (255, 255, 255), thickness=2)
     
-    # 1번 카메라 영역 (좌상단)에 대해 사람이 감지되면 깜빡이는 테두리 표시
-    if detection_active:
-        blink = int(time.time() * 2) % 2 == 0
-        color = (0, 0, 255) if blink else (0, 0, 0)
-        cv2.rectangle(combined_with_lines, (0, 0), (quad_width, quad_height), color, thickness=4)
+    # 각 카메라 영역에 대해 사람이 감지되면 해당 영역에 깜빡이는 테두리 표시
+    # 각 분할 영역 좌표: 
+    # 1번: (0,0)-(quad_width,quad_height)
+    # 2번: (quad_width,0)-(w,quad_height)
+    # 3번: (0,quad_height)-(quad_width, h)
+    # 4번: (quad_width,quad_height)-(w, h)
+    for i, (x, y) in enumerate([(0,0), (quad_width,0), (0,quad_height), (quad_width,quad_height)]):
+        if cameras[i]["detection_active"]:
+            blink = int(time.time() * 2) % 2 == 0
+            color = (0, 0, 255) if blink else (0, 0, 0)
+            cv2.rectangle(combined_with_lines, (x, y), (x+quad_width, y+quad_height), color, thickness=4)
     
     cv2.imshow(window_name, combined_with_lines)
     key = cv2.waitKey(1) & 0xFF
