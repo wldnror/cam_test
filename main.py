@@ -1,54 +1,79 @@
 import cv2
 import numpy as np
+import time
 
-# 4대의 카메라 스트림 URL (IP와 포트는 상황에 맞게 수정)
+# 4?? ??? ??? URL (IP? ??? ??? ?? ?????)
 camera_urls = [
-    "http://10.0.0.81/stream",  # 정상 연결됨
-    "http://10.0.0.82/stream",  # 연결 실패
-    "http://10.0.0.83/stream",  # 연결 실패
-    "http://10.0.0.84/stream"   # 연결 실패
+    "http://10.0.0.81/stream",  # ?? ??
+    "http://10.0.0.82/stream",  # ?? ?? ? ???
+    "http://10.0.0.83/stream",  # ?? ?? ? ???
+    "http://10.0.0.84/stream"   # ?? ?? ? ???
 ]
 
-# VideoCapture 객체 생성 시 FFMPEG 백엔드를 사용 (가능하면)
-caps = []
+# ? ??? ??? ?? (URL? VideoCapture ??)
+cameras = []
 for url in camera_urls:
     cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-    # 혹은 FFMPEG가 없으면 기본값 사용: cap = cv2.VideoCapture(url)
-    caps.append(cap)
+    cameras.append({"url": url, "cap": cap, "last_try": time.time()})
 
-# 화면에 표시할 프레임 크기 (예: 640x480)
+# ? ?? ??? ?? (???? ?? ??)
 frame_width, frame_height = 640, 480
 
-def get_frame(cap):
-    # 캡처 객체가 열려있는지 먼저 확인
-    if not cap.isOpened():
-        return np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+def reinitialize_camera(camera):
+    """??? ??? ??: ?? ??? ???"""
+    print(f"??? ??: {camera['url']}")
+    # ??? ?? ??? ??? ? ?? ??
+    try:
+        camera["cap"].release()
+    except:
+        pass
+    camera["cap"] = cv2.VideoCapture(camera["url"], cv2.CAP_FFMPEG)
+    camera["last_try"] = time.time()
+
+def get_frame(camera):
+    cap = camera["cap"]
+    # ?? ?? ??? ???? ??? ??? (?? 5? ??)
+    if not cap.isOpened() and (time.time() - camera["last_try"] > 5):
+        reinitialize_camera(camera)
     try:
         ret, frame = cap.read()
     except Exception as e:
-        print("Exception during read:", e)
+        print("??? ?? ??:", e)
         ret = False
     if not ret or frame is None:
-        # 프레임 읽기 실패 시 빈 프레임 반환
-        return np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
-    # 필요 시 프레임 크기 조절
-    frame = cv2.resize(frame, (frame_width, frame_height))
+        # ??? ?? ?? ? ??? ? ??? ??
+        frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+    else:
+        frame = cv2.resize(frame, (frame_width, frame_height))
     return frame
 
-while True:
-    # 각 캡처 객체에서 프레임 가져오기
-    frames = [get_frame(cap) for cap in caps]
+# ?? ?? ??? ? ??
+cv2.namedWindow("4 Camera Streams", cv2.WINDOW_NORMAL)
+cv2.setWindowProperty("4 Camera Streams", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
-    # 4분할 화면 구성 (2행 2열)
+while True:
+    # ? ????? ??? ???? (??? ?? ??)
+    frames = [get_frame(cam) for cam in cameras]
+
+    # 4?? ?? ??: ?? ?? ?? ?
     top_row = cv2.hconcat([frames[0], frames[1]])
     bottom_row = cv2.hconcat([frames[2], frames[3]])
     combined = cv2.vconcat([top_row, bottom_row])
 
-    cv2.imshow("4 Camera Streams", combined)
+    # ?? ?? ??? ??? ?? (?? ?, ?? 2)
+    combined_with_lines = combined.copy()
+    height, width = combined_with_lines.shape[:2]
+    # ?? ??? (?? ???)
+    cv2.line(combined_with_lines, (width//2, 0), (width//2, height), (255, 255, 255), thickness=2)
+    # ?? ??? (?? ???)
+    cv2.line(combined_with_lines, (0, height//2), (width, height//2), (255, 255, 255), thickness=2)
+
+    cv2.imshow("4 Camera Streams", combined_with_lines)
+    # 'q'? ??? ??
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-# 종료 시 리소스 해제
-for cap in caps:
-    cap.release()
+# ?? ? ? ?? ?? ??
+for cam in cameras:
+    cam["cap"].release()
 cv2.destroyAllWindows()
