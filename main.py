@@ -1,65 +1,88 @@
 import cv2
 import numpy as np
+import threading
 import time
 
-# 4대의 카메라 스트림 URL (IP와 포트는 상황에 맞게 수정)
+# 4대의 카메라 스트림 URL (실제 연결되는 것은 1번만 있고, 나머지는 없는 상태)
 camera_urls = [
-    "http://10.0.0.81/stream",  # 정상 연결
-    "http://10.0.0.82/stream",  # 연결 실패 시 재시도
-    "http://10.0.0.83/stream",  # 연결 실패 시 재시도
-    "http://10.0.0.84/stream"   # 연결 실패 시 재시도
+    "http://10.0.0.81/stream",  # 정상 연결된 카메라
+    "http://10.0.0.82/stream",  # 연결 없음
+    "http://10.0.0.83/stream",  # 연결 없음
+    "http://10.0.0.84/stream"   # 연결 없음
 ]
-
-# 각 카메라 정보를 저장 (URL, VideoCapture 객체, 마지막 재시도 시간)
-cameras = []
-for url in camera_urls:
-    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
-    cameras.append({"url": url, "cap": cap, "last_try": time.time()})
 
 # 모니터 해상도 (16:9 예시: 1920x1080)
 monitor_width, monitor_height = 1920, 1080
-# 2x2 그리드이므로 각 분할 화면 크기
 quad_width, quad_height = monitor_width // 2, monitor_height // 2
 
-# 전체화면 여부 토글 변수
-is_fullscreen = True
+# 각 카메라의 최신 프레임과 캡처 객체, 스레드를 저장할 리스트
+cameras = []
+for url in camera_urls:
+    cam = {
+        "url": url,
+        "cap": cv2.VideoCapture(url, cv2.CAP_FFMPEG),
+        "frame": np.zeros((quad_height, quad_width, 3), dtype=np.uint8),
+        "lock": threading.Lock(),
+        "last_try": time.time()
+    }
+    cameras.append(cam)
+
+def capture_thread(cam):
+    """각 카메라의 프레임을 계속 읽어오는 스레드 함수"""
+    while True:
+        cap = cam["cap"]
+        # 캡처 객체가 열려있지 않으면 일정 간격 후 재접속 시도
+        if not cap.isOpened():
+            if time.time() - cam["last_try"] > 5:
+                print(f"재접속 시도: {cam['url']}")
+                try:
+                    cap.release()
+                except Exception as e:
+                    print("캡 해제 에러:", e)
+                cam["cap"] = cv2.VideoCapture(cam["url"], cv2.CAP_FFMPEG)
+                cam["last_try"] = time.time()
+            # 잠시 대기 후 재시도
+            time.sleep(0.5)
+            continue
+
+        try:
+            ret, frame = cap.read()
+        except Exception as e:
+            print("프레임 읽기 예외:", e)
+            ret = False
+
+        if ret and frame is not None:
+            frame = cv2.resize(frame, (quad_width, quad_height))
+            with cam["lock"]:
+                cam["frame"] = frame
+        else:
+            # 프레임 읽기 실패 시 빈 프레임 사용
+            with cam["lock"]:
+                cam["frame"] = np.zeros((quad_height, quad_width, 3), dtype=np.uint8)
+            time.sleep(0.1)  # 실패 시 잠시 대기
+        # 너무 빠른 루프 방지를 위해 약간의 sleep
+        time.sleep(0.01)
+
+# 각 카메라마다 스레드 생성 및 시작
+threads = []
+for cam in cameras:
+    t = threading.Thread(target=capture_thread, args=(cam,), daemon=True)
+    t.start()
+    threads.append(t)
+
 window_name = "4 Camera Streams"
-
-def reinitialize_camera(camera):
-    """캠 재접속 함수: 캡처 객체를 재생성"""
-    print(f"재접속 시도: {camera['url']}")
-    try:
-        camera["cap"].release()
-    except Exception as e:
-        print("캡 해제 에러:", e)
-    camera["cap"] = cv2.VideoCapture(camera["url"], cv2.CAP_FFMPEG)
-    camera["last_try"] = time.time()
-
-def get_frame(camera):
-    cap = camera["cap"]
-    # 캡처가 열려있지 않거나 마지막 재시도 후 5초가 지난 경우 재시도
-    if not cap.isOpened() and (time.time() - camera["last_try"] > 5):
-        reinitialize_camera(camera)
-    try:
-        ret, frame = cap.read()
-    except Exception as e:
-        print("프레임 읽기 예외:", e)
-        ret = False
-    if not ret or frame is None:
-        # 읽기 실패 시 검은색 빈 프레임 반환
-        frame = np.zeros((quad_height, quad_width, 3), dtype=np.uint8)
-    else:
-        # 프레임 크기를 16:9 분할에 맞게 조정 (960x540)
-        frame = cv2.resize(frame, (quad_width, quad_height))
-    return frame
-
-# 창 생성 (처음엔 전체화면)
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
+# 전체화면 토글 변수
+is_fullscreen = True
+
 while True:
-    # 각 카메라에서 프레임 얻기 (재시도 포함)
-    frames = [get_frame(cam) for cam in cameras]
+    # 각 카메라의 최신 프레임을 가져옴 (스레드 안전하게)
+    frames = []
+    for cam in cameras:
+        with cam["lock"]:
+            frames.append(cam["frame"].copy())
 
     # 2행 2열 분할 구성
     top_row = cv2.hconcat([frames[0], frames[1]])
@@ -86,7 +109,4 @@ while True:
         else:
             cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
 
-# 종료 시 각 캡처 객체 해제
-for cam in cameras:
-    cam["cap"].release()
 cv2.destroyAllWindows()
