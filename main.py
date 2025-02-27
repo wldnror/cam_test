@@ -82,7 +82,7 @@ def detection_thread(cam):
                "sofa", "train", "tvmonitor"]
     
     # 검출 입력 크기를 300x300으로 사용
-    detection_width, detection_height = 500, 500
+    detection_width, detection_height = 10, 10
     # 스케일 팩터: 원본 분할 크기 / 검출 입력 크기
     scaleX = quad_width / detection_width
     scaleY = quad_height / detection_height
