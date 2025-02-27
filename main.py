@@ -67,17 +67,22 @@ for cam in cameras:
     t.start()
     threads.append(t)
 
-# HOG 사람 검출기 초기화 (1번 카메라에 적용)
-hog = cv2.HOGDescriptor()
-hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+# MobileNet-SSD 모델 로드 (1번 카메라 검출용)
+prototxt = "MobileNetSSD_deploy.prototxt"
+model = "MobileNetSSD_deploy.caffemodel"
+net = cv2.dnn.readNetFromCaffe(prototxt, model)
+
+# 검출할 클래스: MobileNet-SSD 모델의 클래스 리스트
+CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
+           "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
+           "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
+           "sofa", "train", "tvmonitor"]
 
 window_name = "4 Camera Streams"
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-# 처음엔 전체화면 모드로 실행 (토글 가능)
 cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 is_fullscreen = True
 
-# 1번 카메라에서 사람 감지 결과를 저장할 변수
 detection_active = False
 
 while True:
@@ -87,19 +92,25 @@ while True:
         with cam["lock"]:
             frames.append(cam["frame"].copy())
 
-    # 1번 카메라에 대해 사람 검출 (검출이 무겁다면 매 프레임이 아니라 주기적으로 처리할 수 있음)
+    # MobileNet-SSD를 이용해 1번 카메라에서 사람 감지
     frame_cam1 = frames[0].copy()
-    # 검출 결과: x, y, w, h 좌표 배열
-    rects, weights = hog.detectMultiScale(frame_cam1, winStride=(8,8))
-    # 감지 결과가 있다면 네모 표시
-    if len(rects) > 0:
-        detection_active = True
-        for (x, y, w, h) in rects:
-            cv2.rectangle(frame_cam1, (x, y), (x+w, y+h), (0, 255, 0), 2)
-    else:
-        detection_active = False
+    blob = cv2.dnn.blobFromImage(frame_cam1, 0.007843, (quad_width, quad_height), 127.5)
+    net.setInput(blob)
+    detections = net.forward()
 
-    # 1번 카메라 프레임 업데이트 (검출된 결과 표시된 이미지로 교체)
+    detection_active = False
+    # 탐지 결과 반복
+    for i in range(detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+        if confidence > 0.5:  # 신뢰도 임계값
+            idx = int(detections[0, 0, i, 1])
+            if CLASSES[idx] == "person":
+                detection_active = True
+                box = detections[0, 0, i, 3:7] * np.array([quad_width, quad_height, quad_width, quad_height])
+                (startX, startY, endX, endY) = box.astype("int")
+                cv2.rectangle(frame_cam1, (startX, startY), (endX, endY), (0, 255, 0), 2)
+
+    # 1번 카메라 프레임 업데이트 (검출 결과 표시)
     frames[0] = frame_cam1
 
     # 2행 2열 분할 구성
@@ -113,10 +124,8 @@ while True:
     cv2.line(combined_with_lines, (w // 2, 0), (w // 2, h), (255, 255, 255), thickness=2)
     cv2.line(combined_with_lines, (0, h // 2), (w, h // 2), (255, 255, 255), thickness=2)
 
-    # 1번 카메라 영역에 대해 깜빡이는 테두리 (감지 시)
-    # 1번 영역는 좌상단 영역 : x:0~quad_width, y:0~quad_height
+    # 1번 카메라 영역 (좌상단)에 대해 깜빡이는 테두리 표시 (감지 시)
     if detection_active:
-        # 깜빡임 효과: 현재 시간 기반 주기로 색상 전환 (빨간색/투명)
         blink = int(time.time() * 2) % 2 == 0
         color = (0, 0, 255) if blink else (0, 0, 0)
         cv2.rectangle(combined_with_lines, (0, 0), (quad_width, quad_height), color, thickness=4)
@@ -124,10 +133,8 @@ while True:
     cv2.imshow(window_name, combined_with_lines)
     key = cv2.waitKey(1) & 0xFF
 
-    # 'q' 키 누르면 종료
     if key == ord('q'):
         break
-    # 'f' 키 누르면 전체화면/창 모드 토글
     if key == ord('f'):
         is_fullscreen = not is_fullscreen
         if is_fullscreen:
