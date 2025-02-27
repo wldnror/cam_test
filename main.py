@@ -4,9 +4,9 @@ import numpy as np
 # 4대의 카메라 스트림 URL (IP와 포트는 상황에 맞게 수정하세요)
 camera_urls = [
     "http://10.0.0.81/stream",
-    # "http://10.0.0.82/stream",
-    # "http://10.0.0.83/stream",
-    # "http://10.0.0.84/stream"
+    "http://10.0.0.82/stream",
+    "http://10.0.0.83/stream",
+    "http://10.0.0.84/stream"
 ]
 
 # 각 카메라 VideoCapture 객체 생성
