@@ -1,25 +1,43 @@
 import cv2
-import requests
+import numpy as np
 
-# 예시: 1번 카메라 스트림 처리 및 사람 인식
-cap = cv2.VideoCapture("http://10.0.0.82/stream")
-while True:
+# 4대의 카메라 스트림 URL (IP와 포트는 상황에 맞게 수정하세요)
+camera_urls = [
+    "http://10.0.0.81/stream",
+    "http://10.0.0.82/stream",
+    "http://10.0.0.83/stream",
+    "http://10.0.0.84/stream"
+]
+
+# 각 카메라 VideoCapture 객체 생성
+caps = [cv2.VideoCapture(url) for url in camera_urls]
+
+# 모니터 화면의 해상도에 맞춰 빈 프레임의 크기 지정 (예: 640x480)
+frame_width, frame_height = 640, 480
+
+def get_frame(cap):
     ret, frame = cap.read()
     if not ret:
-        continue
-    # 사람 인식 알고리즘 (예: Haar Cascade, MobileNet-SSD 등)을 적용
-    detected = person_detection(frame)  # 사용자 정의 함수
-    if detected:
-        # 사람이 감지되었으면 LED 켜기 요청
-        requests.get("http://10.0.0.82/led_on")
-        # 화면에 시각적 표시 (예: 사각형, 텍스트 등)
-        cv2.putText(frame, "Person Detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        # 프레임 읽기에 실패하면 검은색 빈 프레임 반환
+        frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
     else:
-        # 사람이 없으면 LED 끄기 요청
-        requests.get("http://10.0.0.82/led_off")
-    # 결과 출력
-    cv2.imshow("Camera 1", frame)
+        # 필요시 프레임 크기 조절
+        frame = cv2.resize(frame, (frame_width, frame_height))
+    return frame
+
+while True:
+    frames = [get_frame(cap) for cap in caps]
+
+    # 4분할 화면 구성: 두 행, 두 열
+    top_row = cv2.hconcat([frames[0], frames[1]])
+    bottom_row = cv2.hconcat([frames[2], frames[3]])
+    combined = cv2.vconcat([top_row, bottom_row])
+
+    cv2.imshow("4 Camera Streams", combined)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
-cap.release()
+
+# 리소스 해제
+for cap in caps:
+    cap.release()
 cv2.destroyAllWindows()
